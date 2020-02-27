@@ -1,4 +1,6 @@
-﻿using DeBroglie.Rot;
+﻿using DeBroglie.Constraints;
+using DeBroglie.Rot;
+using DeBroglie.Topo;
 using Newtonsoft.Json;
 using System.Collections.Generic;
 using System.Linq;
@@ -111,6 +113,11 @@ namespace DeBroglie.Console.Config
         public string Ground { get; set; }
 
         /// <summary>
+        /// Undocumented experimental feature.
+        /// </summary>
+        public string PadTile { get; set; }
+
+        /// <summary>
         /// Shorthand for setting reflectionalSymmetry and rotationalSymmetry. 
         /// If even, reflections are on, and rotations is half symmetry. 
         /// Otherwise reflections are off and rotations are equal to symmetry.
@@ -156,6 +163,17 @@ namespace DeBroglie.Console.Config
         /// Dumps snapshots of the output while the generation process is running. Experimenta.
         /// </summary>
         public bool Animate { get; set; }
+
+        /// <summary>
+        /// If set, automatically detects adjacencies.
+        /// </summary>
+        public bool AutoAdjacency { get; set; }
+
+        /// <summary>
+        /// Value between 0 and 1 indicating how close a match tiles have to be to be considered
+        /// automatically adjacent.
+        /// </summary>
+        public double AutoAdjacencyTolerance { get; set; }
 
         /// <summary>
         /// Specifies various per-tile information.
@@ -238,18 +256,14 @@ namespace DeBroglie.Console.Config
     {
         public List<string> Src { get; set; }
         public List<string> Dest { get; set; } 
-        public int X { get; set; }
-        public int Y { get; set; }
-        public int Z { get; set; }
+        public Direction Direction { get; set; }
 
         public List<string> Left
         {
             set
             {
                 Src = value;
-                X = 1;
-                Y = 0;
-                Z = 0;
+                Direction = Direction.XPlus;
             }
         }
 
@@ -263,9 +277,8 @@ namespace DeBroglie.Console.Config
             set
             {
                 Src = value;
-                X = 0;
-                Y = 1;
-                Z = 0;
+                Direction = Direction.YPlus;
+
             }
         }
 
@@ -279,9 +292,7 @@ namespace DeBroglie.Console.Config
             set
             {
                 Src = value;
-                X = 0;
-                Y = 0;
-                Z = -1;
+                Direction = Direction.ZMinus;
             }
         }
 
@@ -311,10 +322,17 @@ namespace DeBroglie.Console.Config
 
         /// <summary>
         /// Set of points that must be connected by paths.
-        /// If null, then PathConstraint ensures that all path cells
+        /// If EndPoints and EndPointTiles are null, then EdgedPathConstraint ensures that all path cells
         /// are connected.
         /// </summary>
         public Point[] EndPoints { get; set; }
+
+        /// <summary>
+        /// Set of tiles that must be connected by paths.
+        /// If EndPoints and EndPointTiles are null, then EdgedPathConstraint ensures that all path cells
+        /// are connected.
+        /// </summary>
+        public string[] EndPointTiles { get; set; }
     }
 
     public class EdgedPathConfig : ConstraintConfig
@@ -330,10 +348,17 @@ namespace DeBroglie.Console.Config
 
         /// <summary>
         /// Set of points that must be connected by paths.
-        /// If null, then PathConstraint ensures that all path cells
+        /// If EndPoints and EndPointTiles are null, then EdgedPathConstraint ensures that all path cells
         /// are connected.
         /// </summary>
         public Point[] EndPoints { get; set; }
+
+        /// <summary>
+        /// Set of tiles that must be connected by paths.
+        /// If EndPoints and EndPointTiles are null, then EdgedPathConstraint ensures that all path cells
+        /// are connected.
+        /// </summary>
+        public string[] EndPointTiles { get; set; }
     }
 
     public class BorderConfig : ConstraintConfig
@@ -391,5 +416,30 @@ namespace DeBroglie.Console.Config
         public const string TypeString = "mirror";
 
         public override string Type => TypeString;
+    }
+
+    public class CountConfig : ConstraintConfig
+    {
+        public const string TypeString = "count";
+
+        public override string Type => TypeString;
+
+        public string[] Tiles { get; set; }
+
+        /// <summary>
+        /// How to compare the count of <see cref="Tiles"/> to <see cref="Count"/>.
+        /// </summary>
+        public CountComparison Comparison { get; set; }
+
+        /// <summary>
+        /// The count to be compared against.
+        /// </summary>
+        public int Count { get; set; }
+
+        /// <summary>
+        /// If set, this constraint will attempt to pick tiles as early as possible.
+        /// This can give a better random distribution, but higher chance of contradictions.
+        /// </summary>
+        public bool Eager { get; set; }
     }
 }

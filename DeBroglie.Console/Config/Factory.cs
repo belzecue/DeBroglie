@@ -1,6 +1,8 @@
-﻿using DeBroglie.Constraints;
+﻿using DeBroglie.Console.Import;
+using DeBroglie.Constraints;
 using DeBroglie.Models;
 using DeBroglie.Rot;
+using DeBroglie.Tiled;
 using DeBroglie.Topo;
 using System;
 using System.Collections.Generic;
@@ -107,23 +109,33 @@ namespace DeBroglie.Console.Config
                     var tile = Parse(td.Value);
                     if (td.TileSymmetry != null)
                     {
+                        if (!rotationGroup.ReflectionalSymmetry && rotationGroup.RotationalSymmetry == 1)
+                            throw new Exception("Must set symmetry to use tile symmetry");
                         var ts = TileSymmetryUtils.Parse(td.TileSymmetry);
                         tileRotationBuilder.AddSymmetry(tile, ts);
                     }
                     if (td.ReflectX != null)
                     {
+                        if (!rotationGroup.ReflectionalSymmetry)
+                            throw new Exception("Must set reflection symmetry to use tile reflections");
                         tileRotationBuilder.Add(tile, new Rotation(0, true), Parse(td.ReflectX));
                     }
                     if (td.ReflectY != null)
                     {
+                        if (!rotationGroup.ReflectionalSymmetry)
+                            throw new Exception("Must set reflection symmetry to use tile reflections");
                         tileRotationBuilder.Add(tile, new Rotation(180, true), Parse(td.ReflectY));
                     }
                     if (td.RotateCw != null)
                     {
+                        if (rotationGroup.RotationalSymmetry == 1)
+                            throw new Exception("Must set rotation symmetry to use tile rotations");
                         tileRotationBuilder.Add(tile, new Rotation(rotationGroup.SmallestAngle, false), Parse(td.RotateCw));
                     }
                     if (td.RotateCcw != null)
                     {
+                        if (rotationGroup.RotationalSymmetry == 1)
+                            throw new Exception("Must set rotation symmetry to use tile rotations");
                         tileRotationBuilder.Add(tile, new Rotation(360 - rotationGroup.SmallestAngle, false), Parse(td.RotateCcw));
                     }
                     if (td.RotationTreatment != null)
@@ -136,25 +148,47 @@ namespace DeBroglie.Console.Config
             return tileRotationBuilder.Build();
         }
 
-        private void SetupAdjacencies(TileModel model, TileRotation tileRotation)
+        private IList<AdjacentModel.Adjacency> GetManualAdjacencies(DirectionSet directions, TileRotation tileRotation)
         {
-            if (Config.Adjacencies != null)
+            if (Config.Adjacencies == null)
+                return new AdjacentModel.Adjacency[0];
+
+            AdjacentModel.Adjacency Convert(AdjacencyData a)
+            {
+                return new AdjacentModel.Adjacency
+                {
+                    Src = a.Src.Select(Parse).Select(tileRotation.Canonicalize).ToArray(),
+                    Dest = a.Dest.Select(Parse).Select(tileRotation.Canonicalize).ToArray(),
+                    Direction = a.Direction,
+                };
+            }
+
+            return AdjacencyUtils.Rotate(
+                Config.Adjacencies.Select(Convert).ToList(),
+                tileRotation.RotationGroup,
+                directions,
+                tileRotation);
+        }
+
+        private void SetupAdjacencies(TileModel model, TileRotation tileRotation, IList<AdjacentModel.Adjacency> adjacencies)
+        {
+            if (Config.PadTile != null)
+                adjacencies = AdjacencyUtils.ForcePadding(adjacencies, Parse(Config.PadTile));
+
+            if (adjacencies != null)
             {
                 var adjacentModel = model as AdjacentModel;
                 if (adjacentModel == null)
                 {
                     throw new ConfigurationException("Setting adjacencies is only supported for the \"adjacent\" model.");
                 }
-
-                foreach (var a in Config.Adjacencies)
+                foreach (var a in adjacencies)
                 {
-                    var srcAdj = a.Src.Select(Parse).Select(tileRotation.Canonicalize).ToList();
-                    var destAdj = a.Dest.Select(Parse).Select(tileRotation.Canonicalize).ToList();
-                    adjacentModel.AddAdjacency(srcAdj, destAdj, a.X, a.Y, a.Z, tileRotation);
+                    adjacentModel.AddAdjacency(a);
                 }
 
                 // If there are no samples, set frequency to 1 for everything mentioned in this block
-                foreach (var tile in adjacentModel.Tiles)
+                foreach (var tile in adjacentModel.Tiles.ToList())
                 {
                     adjacentModel.SetFrequency(tile, 1, tileRotation);
                 }
@@ -186,8 +220,9 @@ namespace DeBroglie.Console.Config
             }
         }
 
-        public TileModel GetModel(DirectionSet directions, ITopoArray<Tile>[] samples, TileRotation tileRotation)
+        public TileModel GetModel(DirectionSet directions, SampleSet sampleSet, TileRotation tileRotation)
         {
+            var samples = sampleSet.Samples;
             var modelConfig = Config.Model ?? new Adjacent();
             TileModel tileModel;
             if (modelConfig is Overlapping overlapping)
@@ -213,7 +248,12 @@ namespace DeBroglie.Console.Config
                 throw new ConfigurationException($"Unrecognized model type {modelConfig.GetType()}");
             }
 
-            SetupAdjacencies(tileModel, tileRotation);
+            var autoAdjacencies = Config.AutoAdjacency 
+                ? AdjacencyUtils.GetAutoAdjacencies(sampleSet, tileRotation, Config.AutoAdjacencyTolerance)
+                : new AdjacentModel.Adjacency[0];
+            var manualAdjacencies = GetManualAdjacencies(sampleSet.Directions, tileRotation);
+
+            SetupAdjacencies(tileModel, tileRotation, autoAdjacencies.Concat(manualAdjacencies).ToList());
             SetupTiles(tileModel, tileRotation);
 
             return tileModel;
@@ -249,6 +289,7 @@ namespace DeBroglie.Console.Config
                     {
                         var tiles = new HashSet<Tile>(pathData.Tiles.Select(Parse));
                         var p = new PathConstraint(tiles, pathData.EndPoints);
+                        p.EndPointTiles = pathData.EndPointTiles == null ? null : new HashSet<Tile>(pathData.EndPointTiles.Select(Parse));
                         constraints.Add(p);
                     }
                     else if (constraint is EdgedPathConfig edgedPathData)
@@ -256,6 +297,7 @@ namespace DeBroglie.Console.Config
                         var exits = edgedPathData.Exits.ToDictionary(
                             kv => Parse(kv.Key), x => (ISet<Direction>)new HashSet<Direction>(x.Value.Select(ParseDirection)));
                         var p = new EdgedPathConstraint(exits, edgedPathData.EndPoints, tileRotation);
+                        p.EndPointTiles = edgedPathData.EndPointTiles == null ? null : new HashSet<Tile>(edgedPathData.EndPointTiles.Select(Parse));
                         constraints.Add(p);
                     }
                     else if (constraint is BorderConfig borderData)
@@ -300,6 +342,16 @@ namespace DeBroglie.Console.Config
                         constraints.Add(new MirrorConstraint
                         {
                             TileRotation = tileRotation,
+                        });
+                    }
+                    else if (constraint is CountConfig countConfig)
+                    {
+                        constraints.Add(new CountConstraint
+                        {
+                            Tiles = new HashSet<Tile>(countConfig.Tiles.Select(Parse)),
+                            Comparison = countConfig.Comparison,
+                            Count = countConfig.Count,
+                            Eager = countConfig.Eager,
                         });
                     }
                     else

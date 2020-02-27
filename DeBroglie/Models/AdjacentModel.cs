@@ -219,6 +219,11 @@ namespace DeBroglie.Models
             propagator[destPattern][(int)id].Add(srcPattern);
         }
 
+        public void AddAdjacency(Adjacency adjacency)
+        {
+            AddAdjacency(adjacency.Src, adjacency.Dest, adjacency.Direction);
+        }
+
         public bool IsAdjacent(Tile src, Tile dest, Direction d)
         {
             var srcPattern = GetPattern(src);
@@ -276,6 +281,9 @@ namespace DeBroglie.Models
 
         internal override TileModelMapping GetTileModelMapping(Topology topology)
         {
+            RequireDirections();
+            SetDirections(topology.Directions);
+
             if(frequencies.Sum() == 0.0)
             {
                 throw new Exception("No tiles have assigned frequences.");
@@ -300,7 +308,7 @@ namespace DeBroglie.Models
                 PatternModel = patternModel,
                 PatternsToTilesByOffset = patternsToTilesByOffset,
                 TilesToPatternsByOffset = tilesToPatternsByOffset,
-                TileCoordToPatternCoord = null,
+                TileCoordToPatternCoordIndexAndOffset = null,
             };
         }
 
@@ -326,6 +334,13 @@ namespace DeBroglie.Models
                 }
             }
             return pattern;
+        }
+
+        public class Adjacency
+        {
+            public Tile[] Src { get; set; }
+            public Tile[] Dest { get; set; }
+            public Direction Direction { get; set; }
         }
     }
 }

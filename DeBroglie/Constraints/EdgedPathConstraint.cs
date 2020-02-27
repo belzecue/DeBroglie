@@ -1,5 +1,6 @@
 ﻿using DeBroglie.Rot;
 using DeBroglie.Topo;
+using DeBroglie.Trackers;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -11,9 +12,16 @@ namespace DeBroglie.Constraints
     {
         private TilePropagatorTileSet pathTileSet;
 
+        private SelectedTracker pathSelectedTracker;
+
+        private TilePropagatorTileSet endPointTileSet;
+
+        private SelectedTracker endPointSelectedTracker;
+
         private PathConstraintUtils.SimpleGraph graph;
 
         private IDictionary<Direction, TilePropagatorTileSet> tilesByExit;
+        private IDictionary<Direction, SelectedTracker> trackerByExit;
         private IDictionary<Tile, ISet<Direction>> actualExits { get; set; }
 
 
@@ -24,13 +32,20 @@ namespace DeBroglie.Constraints
 
         /// <summary>
         /// Set of points that must be connected by paths.
-        /// If null, then PathConstraint ensures that all path cells
+        /// If EndPoints and EndPointTiles are null, then EdgedPathConstraint ensures that all path cells
         /// are connected.
         /// </summary>
         public Point[] EndPoints { get; set; }
 
         /// <summary>
-        /// If set, Exits is augmented with extra copies as dicted by the tile rotations
+        /// Set of tiles that must be connected by paths.
+        /// If EndPoints and EndPointTiles are null, then EdgedPathConstraint ensures that all path cells
+        /// are connected.
+        /// </summary>
+        public ISet<Tile> EndPointTiles { get; set; }
+
+        /// <summary>
+        /// If set, Exits is augmented with extra copies as dictated by the tile rotations
         /// </summary>
         public TileRotation TileRotation { get; set; }
 
@@ -45,6 +60,9 @@ namespace DeBroglie.Constraints
         public void Init(TilePropagator propagator)
         {
             pathTileSet = propagator.CreateTileSet(Exits.Keys);
+            pathSelectedTracker = propagator.CreateSelectedTracker(pathTileSet);
+            endPointTileSet = EndPointTiles != null ? propagator.CreateTileSet(EndPointTiles) : null;
+            endPointSelectedTracker = EndPointTiles != null ? propagator.CreateSelectedTracker(endPointTileSet) : null;
             graph = CreateEdgedGraph(propagator.Topology);
 
             var tileRotation = TileRotation ?? new TileRotation();
@@ -70,6 +88,9 @@ namespace DeBroglie.Constraints
                 .SelectMany(kv => kv.Value.Select(e => Tuple.Create(kv.Key, e)))
                 .GroupBy(x => x.Item2, x => x.Item1)
                 .ToDictionary(g => g.Key, propagator.CreateTileSet);
+
+            trackerByExit = tilesByExit
+                .ToDictionary(kv => kv.Key, kv => propagator.CreateSelectedTracker(kv.Value));
         }
 
         public void Check(TilePropagator propagator)
@@ -78,61 +99,69 @@ namespace DeBroglie.Constraints
             var topology = propagator.Topology;
             var indices = topology.Width * topology.Height * topology.Depth;
 
-            // TODO: This shouldn't be too hard to implement
-            if (topology.Directions.Type != Topo.DirectionSetType.Cartesian2d)
-                throw new Exception("EdgedPathConstraint only supported for Cartesiant2d");
-
             var nodesPerIndex = topology.Directions.Count + 1;
 
             // Initialize couldBePath and mustBePath based on wave possibilities
             var couldBePath = new bool[indices * nodesPerIndex];
             var mustBePath = new bool[indices * nodesPerIndex];
+            var exitMustBePath = new bool[indices * nodesPerIndex];
             for (int i = 0; i < indices; i++)
             {
-                topology.GetCoord(i, out var x, out var y, out var z);
-
-                couldBePath[i * nodesPerIndex] = false;
-                foreach (var kv in actualExits)
+                foreach(var kv in trackerByExit)
                 {
-                    var tile = kv.Key;
-                    var exits = kv.Value;
-
-                    propagator.GetBannedSelected(x, y, z, tile, out var isBanned, out var isSelected);
-
-                    if (!isBanned)
-                    {
-                        couldBePath[i * nodesPerIndex] = true;
-                        foreach (var exit in exits)
-                        {
-                            couldBePath[i * nodesPerIndex + 1 + (int)exit] = true;
-                        }
-                    }
+                    var exit = kv.Key;
+                    var tracker = kv.Value;
+                    var ts = tracker.GetTristate(i);
+                    couldBePath[i * nodesPerIndex + 1 + (int)exit] = ts.Possible();
+                    // Cannot put this in mustBePath these points can be disconnected, depending on topology mask
+                    exitMustBePath[i * nodesPerIndex + 1 + (int)exit] = ts.IsYes();
                 }
-                // TODO: There's probably a more efficient way to do this
-                propagator.GetBannedSelected(x, y, z, pathTileSet, out var allIsBanned, out var allIsSelected);
-                mustBePath[i * nodesPerIndex] = allIsSelected;
+                var pathTs = pathSelectedTracker.GetTristate(i);
+                couldBePath[i * nodesPerIndex] = pathTs.Possible();
+                mustBePath[i * nodesPerIndex] = pathTs.IsYes();
             }
-
             // Select relevant cells, i.e. those that must be connected.
             bool[] relevant;
-            if (EndPoints == null)
+            if (EndPoints == null && EndPointTiles == null)
             {
                 relevant = mustBePath;
             }
             else
             {
                 relevant = new bool[indices * nodesPerIndex];
-                if (EndPoints.Length == 0)
-                    return;
-                foreach (var endPoint in EndPoints)
+
+                var relevantCount = 0;
+                if (EndPoints != null)
                 {
-                    var index = topology.GetIndex(endPoint.X, endPoint.Y, endPoint.Z);
-                    relevant[index * nodesPerIndex] = true;
+                    foreach (var endPoint in EndPoints)
+                    {
+                        var index = topology.GetIndex(endPoint.X, endPoint.Y, endPoint.Z);
+                        relevant[index * nodesPerIndex] = true;
+                        relevantCount++;
+                    }
+                }
+                if (EndPointTiles != null)
+                {
+                    for (int i = 0; i < indices; i++)
+                    {
+                        if (endPointSelectedTracker.IsSelected(i))
+                        {
+                            relevant[i * nodesPerIndex] = true;
+                            relevantCount++;
+                        }
+                    }
+                }
+                if (relevantCount == 0)
+                {
+                    // Nothing to do.
+                    return;
                 }
             }
             var walkable = couldBePath;
 
-            var isArticulation = PathConstraintUtils.GetArticulationPoints(graph, walkable, relevant);
+            var component = EndPointTiles != null ? new bool[indices] : null;
+
+            var isArticulation = PathConstraintUtils.GetArticulationPoints(graph, walkable, relevant, component);
 
             if (isArticulation == null)
             {
@@ -146,15 +175,28 @@ namespace DeBroglie.Constraints
             for (var i = 0; i < indices; i++)
             {
                 topology.GetCoord(i, out var x, out var y, out var z);
-                if (isArticulation[i * nodesPerIndex])
+                if (isArticulation[i * nodesPerIndex] && !mustBePath[i * nodesPerIndex])
                 {
                     propagator.Select(x, y, z, pathTileSet);
                 }
                 for (var d = 0; d < topology.Directions.Count; d++)
                 {
-                    if(isArticulation[i * nodesPerIndex + 1 + d])
+                    if(isArticulation[i * nodesPerIndex + 1 + d] && !exitMustBePath[i * nodesPerIndex + 1 + d])
                     {
                         propagator.Select(x, y, z, tilesByExit[(Direction)d]);
+                    }
+                }
+            }
+
+            // Any EndPointTiles not in the connected component aren't safe to add
+            if (EndPointTiles != null)
+            {
+                for (int i = 0; i < indices; i++)
+                {
+                    if (!component[i * nodesPerIndex])
+                    {
+                        topology.GetCoord(i, out var x, out var y, out var z);
+                        propagator.Ban(x, y, z, endPointTileSet);
                     }
                 }
             }

@@ -2,8 +2,18 @@
 uid: release_notes
 title: Release Notes
 ---
-# Unreleased
+# v0.6.0
+ * Added DeBroglie.Benchmark
+ * Improved performance of most constraints significantly
+ * Improved performance of generation - changed seed output [breaking]
+
+# v0.5.0
+
 * Improved memory and performance of backtracking significantly
+* Command line program now runs Linux and Mac.
+* Added [auto adjacency detection](adjacency.md#auto-adjacency) support.
+* Added [CountConstraint](xref:DeBroglie.Constraints.CountConstraint)
+* Added EndPointTiles to PathConstraint and EdgedPathConstraint.
 
 # v0.4.0
 

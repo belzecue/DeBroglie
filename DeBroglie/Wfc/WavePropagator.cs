@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using DeBroglie.Topo;
+using DeBroglie.Trackers;
 
 namespace DeBroglie.Wfc
 {
@@ -38,7 +39,7 @@ namespace DeBroglie.Wfc
         private readonly bool backtrack;
         private readonly int backtrackDepth;
         private readonly IWaveConstraint[] constraints;
-        private Random random;
+        private Func<double> randomDouble;
 
         // List of locations that still need to be checked against for fulfilling the model's conditions
         private Stack<PropagateItem> toPropagate;
@@ -62,7 +63,11 @@ namespace DeBroglie.Wfc
           */
         private int[,,] compatible;
 
-        public WavePropagator(PatternModel model, Topology topology, int backtrackDepth = 0, IWaveConstraint[] constraints = null, Random random = null, bool clear = true)
+        private List<ITracker> trackers;
+
+        private IPickHeuristic pickHeuristic;
+
+        public WavePropagator(PatternModel model, Topology topology, int backtrackDepth = 0, IWaveConstraint[] constraints = null, Func<double> randomDouble = null, bool clear = true)
         {
             this.propagator = model.Propagator;
             this.patternCount = model.PatternCount;
@@ -79,7 +84,7 @@ namespace DeBroglie.Wfc
             this.backtrackDepth = backtrackDepth;
             this.constraints = constraints ?? new IWaveConstraint[0];
             this.topology = topology;
-            this.random = random ?? new Random();
+            this.randomDouble = randomDouble ?? new Random().NextDouble;
             directionsCount = topology.Directions.Count;
 
             this.toPropagate = new Stack<PropagateItem>();
@@ -102,7 +107,7 @@ namespace DeBroglie.Wfc
         public bool PeriodicY => periodicY;
         public bool PeriodicZ => periodicZ;
         public Topology Topology => topology;
-        public Random Random => random;
+        public Func<double> RandomDouble => randomDouble;
 
         public int[][][] Propagator => propagator;
         public int PatternCount => patternCount;
@@ -133,8 +138,17 @@ namespace DeBroglie.Wfc
                 Index = index,
                 Pattern = pattern,
             });
+            
             // Update the wave
-            return wave.RemovePossibility(index, pattern);
+            var isContradiction = wave.RemovePossibility(index, pattern);
+
+            // Update trackers
+            foreach (var tracker in trackers)
+            {
+                tracker.DoBan(index, pattern);
+            }
+
+            return isContradiction;
         }
 
         public bool InternalSelect(int index, int chosenPattern)
@@ -155,6 +169,23 @@ namespace DeBroglie.Wfc
         }
         #endregion
 
+        private void PropagateCore(int[] patterns, int i2, int d)
+        {
+            // Hot loop
+            foreach (var p in patterns)
+            {
+                var c = --compatible[i2, p, d];
+                // We've just now ruled out this possible pattern
+                if (c == 0)
+                {
+                    if (InternalBan(i2, p))
+                    {
+                        status = Resolution.Contradiction;
+                    }
+                }
+            }
+        }
+
         private void Propagate()
         {
             while (toPropagate.Count > 0)
@@ -170,18 +201,7 @@ namespace DeBroglie.Wfc
                         continue;
                     }
                     var patterns = propagator[item.Pattern][d];
-                    foreach (var p in patterns)
-                    {
-                        var c = --compatible[i2, p, d];
-                        // We've just now ruled out this possible pattern
-                        if (c == 0)
-                        {
-                            if (InternalBan(i2, p))
-                            {
-                                status = Resolution.Contradiction;
-                            }
-                        }
-                    }
+                    PropagateCore(patterns, i2, d);
                 }
                 // It's important we fully process the item before returning
                 // so that we're in a consistent state for backtracking
@@ -193,42 +213,15 @@ namespace DeBroglie.Wfc
             return;
         }
 
-        private int GetRandomPossiblePatternAt(int index)
-        {
-            var s = 0.0;
-            for (var pattern = 0; pattern < patternCount; pattern++)
-            {
-                if (wave.Get(index, pattern))
-                {
-                    s += frequencies[pattern];
-                }
-            }
-            var r = random.NextDouble() * s;
-            for (var pattern = 0; pattern < patternCount; pattern++)
-            {
-                if (wave.Get(index, pattern))
-                {
-                    r -= frequencies[pattern];
-                }
-                if (r <= 0)
-                {
-                    return pattern;
-                }
-            }
-            return patternCount - 1;
-        }
 
         private void Observe(out int index, out int pattern)
         {
-            // Choose a random cell
-            index = wave.GetRandomMinEntropyIndex(random);
-            if (index == Wave.AllCellsDecided)
+            pickHeuristic.PickObservation(out index, out pattern);
+            if (index == -1)
             {
-                pattern = -1;
                 return;
             }
-            // Choose a random pattern
-            pattern = GetRandomPossiblePatternAt(index);
+
             // Decide on the given cell
             if (InternalSelect(index, pattern))
             {
@@ -291,11 +284,17 @@ namespace DeBroglie.Wfc
          */
         public Resolution Clear()
         {
-            wave = new Wave(frequencies, indices, topology.Mask);
+            wave = new Wave(frequencies.Length, indices);
             toPropagate.Clear();
             status = Resolution.Undecided;
+            this.trackers = new List<ITracker>();
 
-            if(backtrack)
+            var entropyTracker = new EntropyTracker(wave, frequencies, topology.Mask);
+            entropyTracker.Reset();
+            AddTracker(entropyTracker);
+            pickHeuristic = new EntropyHeuristic(entropyTracker, randomDouble);
+
+            if (backtrack)
             {
                 backtrackItems = new Deque<PropagateItem>();
                 backtrackItemsLengths = new Deque<int>();
@@ -400,7 +399,7 @@ namespace DeBroglie.Wfc
             Observe(out index, out var pattern);
 
             // Record what was selected for backtracking purposes
-            if(index != Wave.AllCellsDecided && backtrack)
+            if(index != -1 && backtrack)
             {
                 prevChoices.Push(new PropagateItem { Index = index, Pattern = pattern });
             }
@@ -412,7 +411,7 @@ namespace DeBroglie.Wfc
             if (status == Resolution.Undecided) StepConstraints();
 
             // Are all things are fully chosen?
-            if (index == Wave.AllCellsDecided && status == Resolution.Undecided)
+            if (index == -1 && status == Resolution.Undecided)
             {
                 status = Resolution.Decided;
                 return status;
@@ -483,6 +482,11 @@ namespace DeBroglie.Wfc
                 // Also add the possibility back
                 // as it is removed in InternalBan
                 wave.AddPossibility(index, pattern);
+                // Update trackers
+                foreach(var tracker in trackers)
+                {
+                    tracker.UndoBan(index, pattern);
+                }
                 // Next, undo the decremenents done in Propagate
                 // We skip this if the item is still in toPropagate, as that means Propagate hasn't run
                 if (!toPropagateHashSet.Contains(item))
@@ -503,6 +507,16 @@ namespace DeBroglie.Wfc
                 }
 
             }
+        }
+
+        public void AddTracker(ITracker tracker)
+        {
+            trackers.Add(tracker);
+        }
+
+        public void RemoveTracker(ITracker tracker)
+        {
+            trackers.Remove(tracker);
         }
 
         /**

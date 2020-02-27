@@ -1,16 +1,14 @@
 ﻿using DeBroglie.Console.Config;
 using DeBroglie.Console.Export;
 using DeBroglie.Console.Import;
-using DeBroglie.Constraints;
 using DeBroglie.MagicaVoxel;
 using DeBroglie.Models;
-using DeBroglie.Rot;
 using DeBroglie.Topo;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Serialization;
+using SixLabors.ImageSharp;
 using System;
 using System.Collections.Generic;
-using System.Drawing;
 using System.IO;
 using System.Linq;
 
@@ -87,7 +85,7 @@ namespace DeBroglie.Console
 
             if (config.SrcType == SrcType.BitmapSet)
             {
-                var bitmaps = filenames.ToDictionary(x => x.Key, x => new Bitmap(Path.Combine(config.BaseDirectory, x.Value)));
+                var bitmaps = filenames.ToDictionary(x => x.Key, x => Image.Load(Path.Combine(config.BaseDirectory, x.Value)));
                 var first = bitmaps.First().Value;
                 return new SampleSet
                 {
@@ -151,13 +149,12 @@ namespace DeBroglie.Console
                 sampleSet = LoadFileSet();
             }
             var directions = sampleSet.Directions;
-            var samples = sampleSet.Samples;
 
             var topology = factory.GetOutputTopology(directions); 
 
             var tileRotation = factory.GetTileRotation(config.RotationTreatment, topology);
 
-            var model = factory.GetModel(directions, samples, tileRotation);
+            var model = factory.GetModel(directions, sampleSet, tileRotation);
 
             var constraints = factory.GetConstraints(directions, tileRotation);
 

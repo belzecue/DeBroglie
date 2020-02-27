@@ -89,9 +89,10 @@ You can use <xref:DeBroglie.Constraints.FixedTileConstraint> to force certain fe
 
 <figure>
 <a href="https://github.com/BorisTheBrave/DeBroglie/blob/master/samples/castle/castle.json">
-<video src="../images/castle_fixed.webm" autoplay loop>
-</a>
+<video autoplay loop muted>
+  <source src="../images/castle_fixed.webm" type="video/webm">
 </video>
+</a>
 <figcaption>Several castles all generated with a fixed turret location</figcaption>
 </figure>
 
@@ -145,6 +146,11 @@ The <xref:DeBroglie.Constraints.MirrorConstraint> class forces the generated out
 <img src="../images/mirror_constraint.png"/>
 </a>
 </figure>
+
+## Count
+
+The <xref:DeBroglie.Constraints.CountConstraint> class forces the number of a given tile or set of tiles to be at most or at least a given number.
+
 
 ## Custom Constraints
 
